@@ -1,0 +1,31 @@
+name: chakritrack
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: chakritrack
+      POSTGRES_PASSWORD: local-development-only
+      POSTGRES_DB: chakritrack
+    ports: ["${POSTGRES_PORT:-5545}:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chakritrack"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["${REDIS_PORT:-6389}:6379"]
+    volumes: ["redis_data:/data"]
+  # Local S3-compatible storage for the document vault (use Cloudflare R2 in production)
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: chakritrack
+      MINIO_ROOT_PASSWORD: local-development-only
+    ports: ["${MINIO_PORT:-9010}:9000", "${MINIO_CONSOLE_PORT:-9011}:9001"]
+    volumes: ["minio_data:/data"]
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

@@ -1,0 +1,1141 @@
+// ChakriTrack — Prisma schema (PostgreSQL 17)
+// Conventions:
+//   - ids are cuid strings; money is integer poisha (`*Minor`, BDT x 100)
+//   - all timestamps stored UTC; product timezone is Asia/Dhaka
+//   - user-owned, syncable rows carry `version` (optimistic concurrency) + `deletedAt` (tombstone for offline sync)
+//   - sensitive columns marked `/// @encrypted` are AES-256-GCM encrypted at the application layer (see backend/Project_spec.md §10)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum Role {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum Locale {
+  bn
+  en
+}
+
+enum Plan {
+  FREE
+  PRO
+  PRO_PLUS
+}
+
+enum EducationLevel {
+  SSC
+  HSC
+  DIPLOMA
+  BACHELOR_HONS
+  BACHELOR_PASS
+  MASTERS
+  MPHIL_PHD
+  OTHER
+}
+
+enum OrgType {
+  GOVT
+  AUTONOMOUS
+  BANK_GOVT
+  BANK_PRIVATE
+  PRIVATE
+  MULTINATIONAL
+  NGO
+  INTERNATIONAL
+  OTHER
+}
+
+enum JobSector {
+  BCS
+  GOVT_NON_CADRE
+  GOVT_OTHER
+  BANK
+  PRIVATE
+  NGO
+  TEACHING
+  DEFENCE
+  INTERNSHIP
+  FREELANCE
+  ABROAD
+  OTHER
+}
+
+enum CircularSource {
+  BPSC
+  TELETALK
+  BANGLADESH_BANK
+  NATIONAL_PORTAL
+  NEWSPAPER
+  BDJOBS_LINK
+  LINKEDIN_LINK
+  COMPANY_SITE
+  USER_UPLOAD
+  OTHER
+}
+
+enum CircularStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  CLOSED
+  ARCHIVED
+  REJECTED
+}
+
+enum Visibility {
+  PRIVATE
+  PUBLIC
+}
+
+enum ExtractionInput {
+  LINK
+  IMAGE
+  PDF
+  TEXT
+  SMS
+}
+
+enum ExtractionStatus {
+  QUEUED
+  PROCESSING
+  NEEDS_REVIEW
+  DONE
+  FAILED
+}
+
+enum ApplicationStage {
+  SAVED
+  PREPARING
+  APPLIED
+  FEE_PAID
+  ADMIT_CARD
+  PRELIM
+  WRITTEN
+  PRACTICAL
+  VIVA
+  INTERVIEW
+  OFFER
+  JOINED
+  REJECTED
+  WITHDRAWN
+  MISSED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  DREAM
+}
+
+enum ScheduleKind {
+  APPLY_START
+  APPLY_DEADLINE
+  FEE_DEADLINE
+  ADMIT_CARD
+  SEAT_PLAN
+  PRELIM_EXAM
+  WRITTEN_EXAM
+  PRACTICAL_EXAM
+  VIVA
+  INTERVIEW
+  RESULT
+  DOCUMENT_SUBMISSION
+  MEDICAL
+  POLICE_VERIFICATION
+  JOINING
+  CUSTOM
+}
+
+enum Channel {
+  PUSH
+  SMS
+  EMAIL
+  IN_APP
+}
+
+enum ReminderStatus {
+  PENDING
+  QUEUED
+  SENT
+  FAILED
+  CANCELLED
+  SKIPPED
+}
+
+enum DocumentKind {
+  CV
+  COVER_LETTER
+  PHOTO
+  SIGNATURE
+  CERTIFICATE
+  TRANSCRIPT
+  NID
+  BIRTH_CERTIFICATE
+  EXPERIENCE_LETTER
+  ADMIT_CARD
+  APPLICANT_COPY
+  PAYMENT_SLIP
+  OTHER
+}
+
+enum DocumentPreset {
+  ORIGINAL
+  TELETALK_PHOTO_300x300_100KB
+  TELETALK_SIGNATURE_300x80_60KB
+  PASSPORT_PHOTO_45x55MM
+  PDF_COMPRESSED_1MB
+  THUMBNAIL
+}
+
+enum ExamTrack {
+  BCS
+  BANK
+  PRIMARY_TEACHER
+  NTRCA
+  GOVT_GENERAL
+  JUDICIAL
+  IELTS
+  PRIVATE_APTITUDE
+  OTHER
+}
+
+enum UpdateKind {
+  ADMIT_CARD
+  SEAT_PLAN
+  EXAM_DATE
+  DATE_CHANGE
+  RESULT
+  VIVA_SCHEDULE
+  CORRIGENDUM
+  CANCELLED
+  FINAL_RESULT
+  OTHER
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentProvider {
+  BKASH
+  NAGAD
+  SSLCOMMERZ
+  MANUAL
+  PROMO
+}
+
+enum PaymentStatus {
+  INITIATED
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum AiFeature {
+  CIRCULAR_EXTRACT
+  CV_SCORE
+  CV_TAILOR
+  COVER_LETTER
+  MOCK_VIVA
+  MCQ_EXPLAIN
+  STUDY_PLAN
+  EMAIL_PARSE
+}
+
+enum ReferralStatus {
+  PENDING
+  QUALIFIED
+  REWARDED
+  REJECTED
+}
+
+// ───────────────────────────── Identity ─────────────────────────────
+
+model User {
+  id              String      @id @default(cuid())
+  phone           String?     @unique // E.164, +8801XXXXXXXXX
+  email           String?     @unique
+  passwordHash    String?
+  googleSub       String?     @unique
+  fullName        String
+  role            Role        @default(USER)
+  locale          Locale      @default(bn)
+  timezone        String      @default("Asia/Dhaka")
+  dateOfBirth     DateTime?   @db.Date // drives the age-limit engine
+  gender          String?
+  homeDistrict    String? // quota/district-specific circulars
+  quotaFlags      String[] // e.g. FREEDOM_FIGHTER_DESCENDANT, ETHNIC_MINORITY, DISABLED (user-declared, private)
+  targetSectors   JobSector[]
+  examTracks      ExamTrack[]
+  plan            Plan        @default(FREE)
+  planExpiresAt   DateTime?
+  referralCode    String      @unique
+  referredById    String?
+  phoneVerifiedAt DateTime?
+  emailVerifiedAt DateTime?
+  quietHoursStart Int         @default(23) // hour of day, Asia/Dhaka
+  quietHoursEnd   Int         @default(7)
+  smsOptIn        Boolean     @default(false)
+  emailOptIn      Boolean     @default(true)
+  vaultPinHash    String? // optional second factor for the document vault
+  onboardedAt     DateTime?
+  lastActiveAt    DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  referredBy       User?                @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals        User[]               @relation("UserReferrals")
+  sessions         Session[]
+  devices          Device[]
+  educations       Education[]
+  applications     Application[]
+  scheduleItems    ScheduleItem[]
+  reminders        Reminder[]
+  documents        Document[]
+  resumes          Resume[]
+  extractions      CircularExtraction[]
+  createdCirculars Circular[]           @relation("CircularCreatedBy")
+  follows          CircularFollow[]
+  updatesReported  CircularUpdate[]
+  votes            CircularUpdateVote[]
+  prepPlans        PrepPlan[]
+  studySessions    StudySession[]
+  quizAttempts     QuizAttempt[]
+  reviewCards      ReviewCard[]
+  vivaSessions     MockVivaSession[]
+  streak           Streak?
+  activityDays     ActivityDay[]
+  badges           UserBadge[]
+  subscriptions    Subscription[]
+  payments         Payment[]
+  aiUsages         AiUsage[]
+  notifications    Notification[]
+  referralsMade    Referral[]           @relation("ReferralReferrer")
+  referralReceived Referral?            @relation("ReferralReferee")
+  contacts         Contact[]
+
+  @@index([plan])
+  @@index([lastActiveAt])
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  refreshTokenHash String    @unique
+  familyId         String // rotation family; reuse of a revoked token revokes the whole family
+  deviceId         String?
+  userAgent        String?
+  ip               String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model OtpCode {
+  id         String    @id @default(cuid())
+  target     String // phone (E.164) or email
+  purpose    String // LOGIN | VERIFY_PHONE | VERIFY_EMAIL | RESET | VAULT_UNLOCK
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([target, purpose])
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  userId      String
+  platform    String // android | ios | web
+  pushToken   String?  @unique // Expo/FCM token or Web Push endpoint
+  webPushKeys Json? // { p256dh, auth } for Web Push
+  appVersion  String?
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Education {
+  id          String         @id @default(cuid())
+  userId      String
+  level       EducationLevel
+  institution String?
+  board       String? // SSC/HSC board
+  subject     String?
+  passingYear Int?
+  resultType  String? // GPA | CGPA | DIVISION | CLASS
+  result      String? // "4.50/5", "3.40/4", "1st class"
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ───────────────────────────── Circular catalog ─────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  nameBn    String?
+  type      OrgType
+  website   String?
+  logoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  circulars Circular[]
+
+  @@index([name])
+}
+
+model Circular {
+  id             String         @id @default(cuid())
+  organizationId String?
+  title          String
+  titleBn        String?
+  sector         JobSector
+  source         CircularSource
+  sourceUrl      String?
+  applyUrl       String?
+  contentHash    String         @unique // sha256 of normalized (org + title + deadline + post list) for dedupe
+  visibility     Visibility     @default(PRIVATE)
+  status         CircularStatus @default(DRAFT)
+  publishedAt    DateTime?
+  applyStartAt   DateTime?
+  deadlineAt     DateTime?
+  feeDeadlineAt  DateTime? // e.g. Teletalk fee within 72h of submission
+  feeMinor       Int?
+  feeChannel     String? // TELETALK_SMS | BKASH | PAY_ORDER | BANK_DRAFT | ONLINE
+  ageMin         Int?
+  ageMax         Int?
+  ageRelaxations Json? // [{ quota: "FREEDOM_FIGHTER_DESCENDANT", ageMax: 32 }] — verify per circular
+  ageReferenceAt DateTime?      @db.Date // date the circular counts age on
+  totalVacancies Int?
+  districts      String[] // district restriction, empty = all
+  requirements   Json? // normalized eligibility { minEducation, subjects[], minResult, experienceYears, ... }
+  rawText        String? // OCR/plain text kept for search & re-extraction
+  attachmentKey  String? // stored PDF/image of the original circular
+  language       Locale         @default(bn)
+  followerCount  Int            @default(0)
+  verifiedAt     DateTime?
+  verifiedById   String?
+  createdById    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization?        @relation(fields: [organizationId], references: [id])
+  createdBy    User?                @relation("CircularCreatedBy", fields: [createdById], references: [id])
+  posts        CircularPost[]
+  applications Application[]
+  follows      CircularFollow[]
+  updates      CircularUpdate[]
+  extractions  CircularExtraction[]
+
+  @@index([status, visibility, deadlineAt])
+  @@index([sector, deadlineAt])
+  @@index([organizationId])
+}
+
+model CircularPost {
+  id          String  @id @default(cuid())
+  circularId  String
+  postName    String
+  postNameBn  String?
+  postCode    String?
+  vacancies   Int?
+  grade       Int? // national pay scale grade 1–20
+  payScale    String?
+  eligibility Json?
+  sortOrder   Int     @default(0)
+
+  circular     Circular      @relation(fields: [circularId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@index([circularId])
+}
+
+model CircularExtraction {
+  id          String           @id @default(cuid())
+  userId      String
+  circularId  String?
+  input       ExtractionInput
+  inputUrl    String?
+  inputKey    String? // storage key of uploaded image/pdf
+  status      ExtractionStatus @default(QUEUED)
+  model       String?
+  promptVer   String?
+  rawText     String?
+  result      Json? // CircularDraft (see Project_spec)
+  confidence  Json? // per-field 0..1
+  error       String?
+  latencyMs   Int?
+  costMicros  Int? // USD micros for cost tracking
+  createdAt   DateTime         @default(now())
+  completedAt DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  circular Circular? @relation(fields: [circularId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model CircularFollow {
+  userId     String
+  circularId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  circular Circular @relation(fields: [circularId], references: [id], onDelete: Cascade)
+
+  @@id([userId, circularId])
+  @@index([circularId])
+}
+
+model CircularUpdate {
+  id            String     @id @default(cuid())
+  circularId    String
+  kind          UpdateKind
+  title         String
+  body          String?
+  url           String? // must point to an official domain to be auto-verifiable
+  attachmentKey String?
+  eventAt       DateTime? // exam date / result date
+  reportedById  String?
+  verified      Boolean    @default(false)
+  verifiedById  String?
+  score         Int        @default(0) // upvotes - downvotes
+  createdAt     DateTime   @default(now())
+
+  circular   Circular             @relation(fields: [circularId], references: [id], onDelete: Cascade)
+  reportedBy User?                @relation(fields: [reportedById], references: [id])
+  votes      CircularUpdateVote[]
+
+  @@index([circularId, createdAt])
+}
+
+model CircularUpdateVote {
+  updateId  String
+  userId    String
+  value     Int // +1 / -1
+  createdAt DateTime @default(now())
+
+  update CircularUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([updateId, userId])
+}
+
+// ───────────────────────────── Application tracking ─────────────────────────────
+
+model Application {
+  id               String           @id @default(cuid())
+  userId           String
+  circularId       String?
+  circularPostId   String?
+  title            String // post/position
+  organizationName String
+  sector           JobSector
+  stage            ApplicationStage @default(SAVED)
+  priority         Priority         @default(MEDIUM)
+  boardPosition    String           @default("m") // fractional index (LexoRank-style) within a stage column
+  jobUrl           String?
+  location         String?
+  salaryText       String?
+  deadlineAt       DateTime?
+  appliedAt        DateTime?
+  feeMinor         Int?
+  feePaidAt        DateTime?
+  portalUserId     String? /// @encrypted — Teletalk/portal user id
+  portalPassword   String? /// @encrypted — Teletalk/portal password
+  rollNumber       String?
+  notes            String?
+  tags             String[]
+  color            String?
+  outcomeReason    String?
+  clientId         String? // offline-created id from mobile, for idempotent sync
+  version          Int              @default(1)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  archivedAt       DateTime?
+  deletedAt        DateTime?
+
+  user           User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  circular       Circular?             @relation(fields: [circularId], references: [id])
+  circularPost   CircularPost?         @relation(fields: [circularPostId], references: [id])
+  events         ApplicationEvent[]
+  scheduleItems  ScheduleItem[]
+  reminders      Reminder[]
+  interviewNotes InterviewNote[]
+  documents      ApplicationDocument[]
+  checklist      ChecklistItem[]
+  contacts       Contact[]
+  vivaSessions   MockVivaSession[]
+  resumeScores   ResumeScore[]
+
+  @@unique([userId, clientId])
+  @@index([userId, stage, boardPosition])
+  @@index([userId, deadlineAt])
+  @@index([userId, updatedAt])
+  @@index([circularId])
+}
+
+model ApplicationEvent {
+  id            String            @id @default(cuid())
+  applicationId String
+  type          String // STAGE_CHANGED | NOTE | FEE_PAID | DOC_ATTACHED | REMINDER_SENT | CREATED
+  fromStage     ApplicationStage?
+  toStage       ApplicationStage?
+  meta          Json?
+  at            DateTime          @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, at])
+}
+
+model ChecklistItem {
+  id            String    @id @default(cuid())
+  applicationId String
+  label         String
+  doneAt        DateTime?
+  sortOrder     Int       @default(0)
+  version       Int       @default(1)
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+model ScheduleItem {
+  id            String       @id @default(cuid())
+  userId        String
+  applicationId String?
+  kind          ScheduleKind
+  title         String
+  startsAt      DateTime
+  endsAt        DateTime?
+  allDay        Boolean      @default(false)
+  venue         String?
+  centre        String?
+  seatInfo      String? // building/room/seat from seat plan
+  source        String? // USER | CIRCULAR | UPDATE:<id> | EXTRACTION
+  clientId      String?
+  version       Int          @default(1)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  reminders   Reminder[]
+
+  @@unique([userId, clientId])
+  @@index([userId, startsAt])
+  @@index([applicationId])
+}
+
+model Reminder {
+  id             String         @id @default(cuid())
+  userId         String
+  scheduleItemId String?
+  applicationId  String?
+  channel        Channel
+  fireAt         DateTime
+  offsetMinutes  Int? // relative to scheduleItem.startsAt (negative = before)
+  status         ReminderStatus @default(PENDING)
+  dedupeKey      String         @unique // `${scheduleItemId}:${offset}:${channel}` — prevents duplicate sends
+  attempts       Int            @default(0)
+  lastError      String?
+  sentAt         DateTime?
+  createdAt      DateTime       @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scheduleItem ScheduleItem? @relation(fields: [scheduleItemId], references: [id], onDelete: Cascade)
+  application  Application?  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([status, fireAt])
+  @@index([userId])
+}
+
+model InterviewNote {
+  id             String    @id @default(cuid())
+  applicationId  String
+  round          String // PRELIM | WRITTEN | VIVA | HR | TECHNICAL
+  heldAt         DateTime?
+  boardMembers   String?
+  questions      Json? // [{ q, myAnswer, idealAnswer, tag }]
+  selfRating     Int? // 1..5
+  notes          String?
+  shareAnonymous Boolean   @default(false) // opt-in to the community viva question bank (v2)
+  version        Int       @default(1)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+model Contact {
+  id            String   @id @default(cuid())
+  userId        String
+  applicationId String?
+  name          String
+  role          String?
+  phone         String?
+  email         String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+// ───────────────────────────── Document vault ─────────────────────────────
+
+model Document {
+  id         String       @id @default(cuid())
+  userId     String
+  kind       DocumentKind
+  title      String
+  storageKey String       @unique // private bucket, never public
+  mime       String
+  sizeBytes  Int
+  sha256     String
+  width      Int?
+  height     Int?
+  encrypted  Boolean      @default(true) // envelope-encrypted (per-user DEK)
+  tags       String[]
+  expiresAt  DateTime? // e.g. photo older than 2 months warning for BPSC
+  version    Int          @default(1)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  deletedAt  DateTime?
+
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  variants     DocumentVariant[]
+  applications ApplicationDocument[]
+
+  @@index([userId, kind])
+}
+
+model DocumentVariant {
+  id         String         @id @default(cuid())
+  documentId String
+  preset     DocumentPreset
+  storageKey String         @unique
+  mime       String
+  sizeBytes  Int
+  width      Int?
+  height     Int?
+  createdAt  DateTime       @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, preset])
+}
+
+model ApplicationDocument {
+  applicationId String
+  documentId    String
+  attachedAt    DateTime @default(now())
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  document    Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([applicationId, documentId])
+}
+
+// ───────────────────────────── CV studio ─────────────────────────────
+
+model Resume {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String
+  language  Locale    @default(en)
+  isBase    Boolean   @default(false)
+  parentId  String? // tailored copy of a base resume
+  content   Json // JSON Resume-like structured content (see Project_spec)
+  template  String    @default("classic")
+  pdfKey    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent Resume?       @relation("ResumeTailoring", fields: [parentId], references: [id])
+  copies Resume[]      @relation("ResumeTailoring")
+  scores ResumeScore[]
+
+  @@index([userId])
+}
+
+model ResumeScore {
+  id              String   @id @default(cuid())
+  resumeId        String
+  applicationId   String?
+  jobText         String
+  score           Int // 0..100
+  breakdown       Json // { hardSkills, softSkills, education, title, formatting }
+  missingKeywords String[]
+  suggestions     Json?
+  model           String?
+  createdAt       DateTime @default(now())
+
+  resume      Resume       @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([resumeId])
+}
+
+// ───────────────────────────── Prep tracker ─────────────────────────────
+
+model PrepPlan {
+  id               String    @id @default(cuid())
+  userId           String
+  track            ExamTrack
+  title            String
+  examDate         DateTime?
+  dailyGoalMinutes Int       @default(90)
+  syllabus         Json // [{ subject, marks, topics[] }] — seeded from SyllabusTemplate
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  archivedAt       DateTime?
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions StudySession[]
+
+  @@index([userId])
+}
+
+model SyllabusTemplate {
+  id        String    @id @default(cuid())
+  track     ExamTrack
+  name      String // e.g. "BCS Preliminary (200 marks)"
+  version   String
+  subjects  Json // [{ subject, subjectBn, marks, topics[] }]
+  sourceUrl String?
+  createdAt DateTime  @default(now())
+
+  @@unique([track, name, version])
+}
+
+model StudySession {
+  id        String   @id @default(cuid())
+  userId    String
+  planId    String?
+  subject   String
+  topic     String?
+  minutes   Int
+  startedAt DateTime
+  source    String   @default("TIMER") // TIMER | MANUAL
+  clientId  String?
+  createdAt DateTime @default(now())
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan PrepPlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, clientId])
+  @@index([userId, startedAt])
+}
+
+model Question {
+  id          String    @id @default(cuid())
+  track       ExamTrack
+  subject     String
+  topic       String?
+  language    Locale    @default(bn)
+  stem        String
+  options     Json // ["A", "B", "C", "D"]
+  answerIndex Int
+  explanation String?
+  difficulty  Int       @default(3) // 1..5
+  sourceLabel String? // e.g. "10th BCS" — only for public-domain/past-paper or original content
+  license     String    @default("ORIGINAL") // ORIGINAL | PUBLIC_EXAM | CC_BY | AI_GENERATED_REVIEWED
+  reviewed    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  answers QuizAnswer[]
+  cards   ReviewCard[]
+
+  @@index([track, subject, topic])
+}
+
+model QuizAttempt {
+  id              String    @id @default(cuid())
+  userId          String
+  track           ExamTrack
+  mode            String // PRACTICE | MOCK_FULL | DAILY_10 | REVIEW
+  subject         String?
+  total           Int
+  correct         Int       @default(0)
+  wrong           Int       @default(0)
+  negativeMarking Float     @default(0.5) // BCS prelim uses negative marking — verify per exam
+  score           Float     @default(0)
+  durationSec     Int?
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers QuizAnswer[]
+
+  @@index([userId, startedAt])
+}
+
+model QuizAnswer {
+  id         String  @id @default(cuid())
+  attemptId  String
+  questionId String
+  chosen     Int?
+  correct    Boolean
+  timeMs     Int?
+
+  attempt  QuizAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question Question    @relation(fields: [questionId], references: [id])
+
+  @@index([attemptId])
+}
+
+// FSRS spaced-repetition card state per user/question
+model ReviewCard {
+  userId     String
+  questionId String
+  stability  Float     @default(0)
+  difficulty Float     @default(0)
+  reps       Int       @default(0)
+  lapses     Int       @default(0)
+  state      Int       @default(0) // 0 new, 1 learning, 2 review, 3 relearning
+  dueAt      DateTime  @default(now())
+  lastReview DateTime?
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, questionId])
+  @@index([userId, dueAt])
+}
+
+model MockVivaSession {
+  id            String    @id @default(cuid())
+  userId        String
+  applicationId String?
+  track         ExamTrack
+  context       Json // { post, cadreChoices[], homeDistrict, subject, hobbies } used to personalise questions
+  turns         Json // [{ q, answer, audioKey?, feedback }]
+  overallScore  Int?
+  feedback      Json?
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+// ───────────────────────────── Engagement ─────────────────────────────
+
+model Streak {
+  userId           String    @id
+  current          Int       @default(0)
+  longest          Int       @default(0)
+  lastActiveDate   DateTime? @db.Date // Asia/Dhaka calendar date
+  freezesAvailable Int       @default(1)
+  freezesUsed      Int       @default(0)
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ActivityDay {
+  userId  String
+  date    DateTime @db.Date
+  points  Int      @default(0)
+  actions Json // { appAdded: 1, studyMinutes: 45, quizDone: 1 }
+  frozen  Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date])
+}
+
+model Badge {
+  id          String  @id @default(cuid())
+  code        String  @unique // FIRST_APPLICATION, STREAK_7, STREAK_30, TEN_APPLICATIONS, FIRST_VIVA ...
+  name        String
+  nameBn      String
+  description String?
+  icon        String?
+
+  users UserBadge[]
+}
+
+model UserBadge {
+  userId    String
+  badgeId   String
+  awardedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@id([userId, badgeId])
+}
+
+model Referral {
+  id          String         @id @default(cuid())
+  referrerId  String
+  refereeId   String         @unique
+  status      ReferralStatus @default(PENDING)
+  qualifiedAt DateTime? // referee verified phone + added 3 applications
+  rewardedAt  DateTime?
+  createdAt   DateTime       @default(now())
+
+  referrer User @relation("ReferralReferrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referee  User @relation("ReferralReferee", fields: [refereeId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String // REMINDER | CIRCULAR_UPDATE | STREAK | DIGEST | SYSTEM | REFERRAL
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// ───────────────────────────── Billing & AI metering ─────────────────────────────
+
+model Subscription {
+  id                  String             @id @default(cuid())
+  userId              String
+  plan                Plan
+  status              SubscriptionStatus
+  provider            PaymentProvider
+  providerAgreementId String? /// @encrypted — bKash tokenized agreementID
+  interval            String             @default("MONTH") // MONTH | QUARTER | YEAR | EXAM_SEASON
+  priceMinor          Int
+  currentPeriodStart  DateTime
+  currentPeriodEnd    DateTime
+  cancelAtPeriodEnd   Boolean            @default(false)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([userId])
+  @@index([status, currentPeriodEnd])
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  userId            String
+  subscriptionId    String?
+  provider          PaymentProvider
+  providerPaymentId String?         @unique // bKash paymentID
+  providerTrxId     String? // bKash trxID
+  amountMinor       Int
+  currency          String          @default("BDT")
+  status            PaymentStatus   @default(INITIATED)
+  idempotencyKey    String          @unique
+  purpose           String // SUBSCRIPTION | AI_PACK | EXAM_SEASON_PASS
+  raw               Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+model AiUsage {
+  id           String    @id @default(cuid())
+  userId       String
+  feature      AiFeature
+  units        Int       @default(1)
+  inputTokens  Int?
+  outputTokens Int?
+  costMicros   Int?
+  model        String?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, feature, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String // DOC_VIEWED | DOC_DOWNLOADED | DOC_SHARED | VAULT_UNLOCKED | CIRCULAR_VERIFIED | ACCOUNT_DELETED ...
+  entity    String
+  entityId  String?
+  ip        String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+}
+
+model ShareLink {
+  id         String    @id @default(cuid())
+  userId     String
+  documentId String?
+  kind       String // DOCUMENT | PROGRESS_CARD | REFERRAL
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  maxViews   Int?
+  views      Int       @default(0)
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
